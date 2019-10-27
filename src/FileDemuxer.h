@@ -11,6 +11,7 @@
 struct AVFormatContext;
 struct AVCodecContext;
 struct AVPacket;
+struct AVCodecParameters;
 
 enum DemuxerErrCode
 {
@@ -32,7 +33,7 @@ public:
 	FileDemuxer();
 	~FileDemuxer();
 
-	DemuxerErrCode Open(const std::string &filename, AVCodecID &videoCodecId, AVCodecID &audioCodecId);
+	DemuxerErrCode Open(const std::string &filename, AVCodecParameters &videoCodec, AVCodecParameters &audioCodec);
 	void Close();
 
 	AVPacket *GetPacket();

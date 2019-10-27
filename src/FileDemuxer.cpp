@@ -15,7 +15,7 @@ FileDemuxer::~FileDemuxer()
 	Close();
 }
 
-DemuxerErrCode FileDemuxer::Open(const std::string &filename, AVCodecID &videoCodecId, AVCodecID &audioCodecId)
+DemuxerErrCode FileDemuxer::Open(const std::string &filename, AVCodecParameters &videoCodec, AVCodecParameters &audioCodec)
 {
 	if (m_hasOpenFile)
 	{
@@ -72,8 +72,8 @@ DemuxerErrCode FileDemuxer::Open(const std::string &filename, AVCodecID &videoCo
 	}
 
 	//Get codec context
-	videoCodecId = m_pFormatCtx->streams[m_videoStreamIndex]->codecpar->codec_id;
-	audioCodecId = m_pFormatCtx->streams[m_audioStreamIndex]->codecpar->codec_id;
+    videoCodec = *(m_pFormatCtx->streams[m_videoStreamIndex]->codecpar);
+    audioCodec = *(m_pFormatCtx->streams[m_audioStreamIndex]->codecpar);
 
 	av_dump_format(m_pFormatCtx, 0, filename.c_str(), 0);
 

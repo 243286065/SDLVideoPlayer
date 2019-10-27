@@ -50,5 +50,5 @@ file (GLOB DIR_SRC_HEADERS "src/*.h")
 # set build target
 add_executable(${PROJECT_NAME} ${DIR_SRCS} ${DIR_SRC_HEADERS})
 
-set(PUBLIC_LINK_LIB avcodec avformat avutil swscale swresample)
+set(PUBLIC_LINK_LIB avcodec avformat avutil swscale swresample SDL2 SDL2main)
 target_link_libraries(${PROJECT_NAME} ${PUBLIC_LINK_LIB})
