@@ -74,9 +74,9 @@ private:
     std::condition_variable m_timerCv;
 
     //SDL
-    SDL_Window *m_sdlMainWindow;
-    SDL_Renderer *m_sdlRender;
-    SDL_Texture *m_sdlTexture;
+    SDL_Window *m_sdlMainWindow = nullptr;
+    SDL_Renderer *m_sdlRender = nullptr;
+    SDL_Texture *m_sdlTexture = nullptr;
     SDL_Rect m_sdlRect;
     std::mutex m_sdlMutex;
     int m_screenWidth = 800;
