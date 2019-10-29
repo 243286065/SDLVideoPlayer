@@ -69,6 +69,9 @@ private:
     std::condition_variable m_videoFrameCv;
     std::condition_variable m_audioFrameCv;
     SwsContext* m_imgConvertCtx = nullptr;
+    std::queue<double> m_videoFrameTimestampQueue;
+    std::queue<double> m_audioFrameTimestampQueue;
+    int64_t m_mainTimestamp;
 
     std::mutex m_timerMutex;
     std::condition_variable m_timerCv;

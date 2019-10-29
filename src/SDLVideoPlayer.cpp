@@ -17,6 +17,14 @@ enum USER_EVNET
 	SFM_QUIT_EVENT,
 };
 
+int64_t GetMillSecondsTimestamp()
+{
+	std::chrono::milliseconds ms =
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::system_clock::now().time_since_epoch());
+	return ms.count();
+}
+
 SDLVideoPlayer::SDLVideoPlayer()
 {
 	m_sdlUiThread.reset(new std::thread(&SDLVideoPlayer::ShowPlayUI, this));
@@ -126,6 +134,9 @@ void SDLVideoPlayer::DoDemuex()
 		int videoIndex = m_demuxer.GetVideoStreamId();
 		int audioIndex = m_demuxer.GetAudioStremId();
 
+		std::cout << "Video total seconds: " << m_demuxer.GetVideoTotalSecond() << std::endl;
+		std::cout << "Audio total seconds: " << m_demuxer.GetAudioTotalSecond() << std::endl;
+
 		SDL_Event event;
 		event.type = SFM_NEW_EVENT;
 		SDL_PushEvent(&event);
@@ -192,6 +203,7 @@ void SDLVideoPlayer::DoDecodeVideo()
 
 				std::unique_lock<std::mutex> frameLock(m_videoFrameMutex);
 				m_videoFrameQueue.push(frame);
+				m_videoFrameTimestampQueue.push(frame->pts * av_q2d(m_demuxer.GetVideoTimeBase()) * 1000);
 
 				if (m_videoFrameQueue.size() > 10)
 				{ // cache
@@ -248,7 +260,7 @@ void SDLVideoPlayer::ShowPlayUI()
 		std::cout << "SDL: could not create window - exiting: " << SDL_GetError() << std::endl;
 		return;
 	}
-    m_sdlRender = SDL_CreateRenderer(m_sdlMainWindow, -1, 0);
+	m_sdlRender = SDL_CreateRenderer(m_sdlMainWindow, -1, 0);
 
 	SDL_Event event;
 	while (!m_bExitFlag)
@@ -278,14 +290,15 @@ void SDLVideoPlayer::ShowPlayUI()
 		else if (event.type == SFM_REFRESH_EVENT)
 		{
 			// next frame
-            int width, height;
-            SDL_GetWindowSize(m_sdlMainWindow, &width, &height);
-            if (m_screenWidth != width || m_screenHight != height) {
-                SDL_Event event;
-                event.type = SDL_WINDOWEVENT;
-                event.window.event = SDL_WINDOWEVENT_RESIZED;
-                SDL_PushEvent(&event);
-            }
+			int width, height;
+			SDL_GetWindowSize(m_sdlMainWindow, &width, &height);
+			if (m_screenWidth != width || m_screenHight != height)
+			{
+				SDL_Event event;
+				event.type = SDL_WINDOWEVENT;
+				event.window.event = SDL_WINDOWEVENT_RESIZED;
+				SDL_PushEvent(&event);
+			}
 			PlayFrame();
 		}
 		else if (event.type == SDL_WINDOWEVENT)
@@ -300,7 +313,7 @@ void SDLVideoPlayer::ShowPlayUI()
 			case SDL_WINDOWEVENT_RESIZED:
 			{
 				m_sdlMutex.lock();
-                SDL_GetWindowSize(m_sdlMainWindow, &m_screenWidth, &m_screenHight);
+				SDL_GetWindowSize(m_sdlMainWindow, &m_screenWidth, &m_screenHight);
 
 				double wScaleFactor = ((double)m_screenWidth) / m_videoCodecParams.width;
 				double hScaleFactor = ((double)m_screenHight) / m_videoCodecParams.height;
@@ -341,21 +354,24 @@ void SDLVideoPlayer::ShowPlayUI()
 			}
 			break;
 			}
-        }
-        else if (event.type == SDL_KEYDOWN) {
-            if (event.key.keysym.scancode == SDL_SCANCODE_RETURN) {
-                //FullScreen
-                if (SDL_GetWindowFlags(m_sdlMainWindow) & SDL_WINDOW_FULLSCREEN_DESKTOP) {
-                    SDL_SetWindowFullscreen(m_sdlMainWindow, 0);
-                    SDL_RestoreWindow(m_sdlMainWindow);
-                    SDL_SetWindowPosition(m_sdlMainWindow, SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED);
-                }
-                else 
-                {
-                    SDL_SetWindowFullscreen(m_sdlMainWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
-                }
-            }
-        }
+		}
+		else if (event.type == SDL_KEYDOWN)
+		{
+			if (event.key.keysym.scancode == SDL_SCANCODE_RETURN)
+			{
+				//FullScreen
+				if (SDL_GetWindowFlags(m_sdlMainWindow) & SDL_WINDOW_FULLSCREEN_DESKTOP)
+				{
+					SDL_SetWindowFullscreen(m_sdlMainWindow, 0);
+					SDL_RestoreWindow(m_sdlMainWindow);
+					SDL_SetWindowPosition(m_sdlMainWindow, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+				}
+				else
+				{
+					SDL_SetWindowFullscreen(m_sdlMainWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
+				}
+			}
+		}
 	}
 }
 
@@ -409,12 +425,35 @@ void SDLVideoPlayer::StartTimer()
 		m_timerCv.wait(lock);
 		lock.unlock();
 
-		while (!m_bExitFlag)
+		while (!m_bExitFlag && m_bStartPlay)
 		{
 			SDL_Event event;
 			event.type = SFM_REFRESH_EVENT;
 			SDL_PushEvent(&event);
-			SDL_Delay(40); //25fps
+			//SDL_Delay(40); //25fps
+			std::unique_lock<std::mutex> lock(m_videoFrameMutex);
+			double currentPts = 0, nextPts = 0;
+			if (m_videoFrameTimestampQueue.empty())
+			{
+				nextPts = currentPts + 40; //25fps
+			}
+			else
+			{
+				currentPts = m_videoFrameTimestampQueue.front();
+				m_videoFrameTimestampQueue.pop();
+
+				if (m_videoFrameTimestampQueue.empty())
+				{
+					nextPts = currentPts + 40; //25fps
+				}
+				else
+				{
+					nextPts = m_videoFrameTimestampQueue.front();
+				}
+			}
+
+			lock.unlock();
+			SDL_Delay((int)(nextPts - currentPts));
 		}
 	}
 }

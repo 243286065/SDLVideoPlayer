@@ -6,6 +6,7 @@ extern "C"
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
+#include <libavutil/rational.h>
 }
 
 FileDemuxer::FileDemuxer() {}
@@ -42,6 +43,8 @@ DemuxerErrCode FileDemuxer::Open(const std::string &filename, AVCodecParameters 
 
 	m_videoStreamIndex = av_find_best_stream(m_pFormatCtx, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
 	m_audioStreamIndex = av_find_best_stream(m_pFormatCtx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+	m_videoTotalSecond = m_pFormatCtx->streams[m_videoStreamIndex]->duration * av_q2d(m_pFormatCtx->streams[m_videoStreamIndex]->time_base);
+	m_audioTotalSecond = m_pFormatCtx->streams[m_audioStreamIndex]->duration * av_q2d(m_pFormatCtx->streams[m_audioStreamIndex]->time_base);
 
 	if (m_videoStreamIndex == AVERROR_STREAM_NOT_FOUND)
 	{
@@ -72,8 +75,8 @@ DemuxerErrCode FileDemuxer::Open(const std::string &filename, AVCodecParameters 
 	}
 
 	//Get codec context
-    videoCodec = *(m_pFormatCtx->streams[m_videoStreamIndex]->codecpar);
-    audioCodec = *(m_pFormatCtx->streams[m_audioStreamIndex]->codecpar);
+	videoCodec = *(m_pFormatCtx->streams[m_videoStreamIndex]->codecpar);
+	audioCodec = *(m_pFormatCtx->streams[m_audioStreamIndex]->codecpar);
 
 	av_dump_format(m_pFormatCtx, 0, filename.c_str(), 0);
 
@@ -105,4 +108,14 @@ AVPacket *FileDemuxer::GetPacket()
 		return nullptr;
 	}
 	return pkt;
+}
+
+AVRational FileDemuxer::GetVideoTimeBase()
+{
+	return m_pFormatCtx->streams[m_videoStreamIndex]->time_base;
+}
+
+AVRational FileDemuxer::GetAudioTimeBase()
+{
+	return m_pFormatCtx->streams[m_audioStreamIndex]->time_base;
 }

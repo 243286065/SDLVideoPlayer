@@ -4,6 +4,11 @@
 
 #pragma once
 
+extern "C"
+{
+#include <libavutil/rational.h>
+}
+
 #include <string>
 #include <mutex>
 #include <atomic>
@@ -41,11 +46,17 @@ public:
 	int GetVideoStreamId() { return m_videoStreamIndex; }
 	int GetAudioStremId() { return m_audioStreamIndex; }
 
+    double GetVideoTotalSecond() { return m_videoTotalSecond; }
+    double GetAudioTotalSecond() { return m_audioTotalSecond; }
+    AVRational GetVideoTimeBase();
+    AVRational GetAudioTimeBase();
 private:
 	AVFormatContext *m_pFormatCtx = nullptr;
 	int m_videoStreamIndex;
 	int m_audioStreamIndex;
 	std::mutex m_syncMutex;
+    double m_videoTotalSecond = 0;
+    double m_audioTotalSecond = 0;
 
 	// Check if already open a file
 	std::atomic_bool m_hasOpenFile = false;
