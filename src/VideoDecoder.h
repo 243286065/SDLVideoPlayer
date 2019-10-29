@@ -17,6 +17,7 @@ public:
 
     int GetVideoWidth();
     int GetVideoHeight();
+    AVCodecContext* GetCodecContext() { return m_ctx; }
 
     bool DecodePacket(const AVPacket* pkt);
     AVFrame* GetDecodedFrame();

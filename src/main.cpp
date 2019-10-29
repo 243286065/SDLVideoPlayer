@@ -13,7 +13,7 @@ int main(int argc, char *argv[])
 
 	SDLVideoPlayer player;
 	player.StartPlay(argv[1]);
-	system("PAUSE");
+    system("PAUSE");
 	player.StopPlay();
 	return 0;
 }

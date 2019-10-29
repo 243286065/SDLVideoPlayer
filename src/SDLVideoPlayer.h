@@ -14,6 +14,8 @@ extern "C"
 #include <SDL.h>
 }
 
+struct SwsContext;
+
 class SDLVideoPlayer
 {
 public:
@@ -22,12 +24,16 @@ public:
 
 	void StartPlay(const std::string &filename);
 	void StopPlay();
+    void Free();
 
 private:
 	void DoDemuex();
 	void DoDecodeVideo();
 	void DoDecodeAudio();
     void ShowPlayUI();
+
+    void PlayFrame();
+    void StartTimer();
 
 	FileDemuxer m_demuxer;
     VideoDecoder m_videoDecoder;
@@ -36,6 +42,7 @@ private:
 	std::unique_ptr<std::thread> m_videoDecodeThread = nullptr;
 	std::unique_ptr<std::thread> m_audioDecodeThread = nullptr;
     std::unique_ptr<std::thread> m_sdlUiThread = nullptr;
+    std::unique_ptr<std::thread> m_sdlTimerThread = nullptr;
 	//main thread
 	//std::unique_ptr<std::thread> m_sdlUiThread;
 
@@ -55,10 +62,23 @@ private:
 
     AVCodecParameters m_videoCodecParams;
     AVCodecParameters m_audioCodecParams;
+    std::queue<AVFrame *> m_videoFrameQueue;
+    std::queue<AVFrame *> m_audioFrameQueue;
+    std::mutex m_videoFrameMutex;
+    std::mutex m_audioFrameMutex;
+    std::condition_variable m_videoFrameCv;
+    std::condition_variable m_audioFrameCv;
+    SwsContext* m_imgConvertCtx = nullptr;
+
+    std::mutex m_timerMutex;
+    std::condition_variable m_timerCv;
 
     //SDL
     SDL_Window *m_sdlMainWindow;
     SDL_Renderer *m_sdlRender;
     SDL_Texture *m_sdlTexture;
     SDL_Rect m_sdlRect;
+    std::mutex m_sdlMutex;
+    int m_screenWidth = 800;
+    int m_screenHight = 600;
 };
