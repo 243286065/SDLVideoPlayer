@@ -84,4 +84,6 @@ private:
     std::mutex m_sdlMutex;
     int m_screenWidth = 800;
     int m_screenHight = 600;
+
+    std::atomic_bool m_bDemuxFinish = false;
 };

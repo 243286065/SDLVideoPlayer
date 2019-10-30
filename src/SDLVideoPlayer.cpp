@@ -142,12 +142,14 @@ void SDLVideoPlayer::DoDemuex()
 		SDL_PushEvent(&event);
 
 		lock.unlock();
+        m_bDemuxFinish = false;
 		while (!m_bExitFlag && m_bStartPlay)
 		{
 			AVPacket *pkt = m_demuxer.GetPacket();
 			if (!pkt)
 			{
 				//m_bStartPlay = false;
+                m_bDemuxFinish = true;
 				break;
 			}
 			else
@@ -165,9 +167,14 @@ void SDLVideoPlayer::DoDemuex()
 				}
 				else if (pkt->stream_index == audioIndex)
 				{
-					/*std::lock_guard<std::mutex> lock(m_audioTaskMutex);
+                    std::unique_lock<std::mutex> lock(m_audioTaskMutex);
                     m_audioDecodeTask.push(pkt);
-                    m_audioTaskCv.notify_one();*/
+                    m_audioTaskCv.notify_one();
+
+                    if (m_audioDecodeTask.size() > 10)
+                    {
+                        m_audioTaskCv.wait(lock);
+                    }
 				}
 				else
 				{
@@ -232,11 +239,14 @@ void SDLVideoPlayer::DoDecodeAudio()
 			AVPacket *pkt = m_audioDecodeTask.front();
 			m_audioDecodeTask.pop();
 			lock.unlock();
+            m_audioTaskCv.notify_one();
 
 			//decode pkt
 			std::cout << pkt->pos << " : audio packet" << std::endl;
 
+
 			av_packet_unref(pkt);
+            av_packet_free(&pkt);
 			//next pkt
 			lock.lock();
 		}
@@ -383,10 +393,16 @@ void SDLVideoPlayer::PlayFrame()
 		m_videoFrameCv.notify_one();
 		m_videoFrameMutex.unlock();
 
-		if (m_bStartPlay)
+		if (m_bStartPlay && m_bDemuxFinish)
 		{
-			//Finish
-			StopPlay();
+            m_videoTaskMutex.lock();
+            m_audioTaskMutex.lock();
+            if (m_videoDecodeTask.empty() && m_audioDecodeTask.empty()) {
+                //Finish
+                StopPlay();
+            }
+            m_audioTaskMutex.unlock();
+            m_videoTaskMutex.unlock();
 		}
 		return;
 	}
