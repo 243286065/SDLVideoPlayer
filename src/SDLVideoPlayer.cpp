@@ -276,6 +276,15 @@ void SDLVideoPlayer::ShowPlayUI()
 	while (!m_bExitFlag)
 	{
 		SDL_WaitEvent(&event);
+
+        auto ts = GetMillSecondsTimestamp();
+        if (ts - m_mousetLastActiveTs > 1000) {
+            SDL_ShowCursor(false);
+        }
+        else {
+            SDL_ShowCursor(true);
+        }
+
 		if (event.type == SFM_NEW_EVENT)
 		{
 			m_sdlMutex.lock();
@@ -381,7 +390,10 @@ void SDLVideoPlayer::ShowPlayUI()
 					SDL_SetWindowFullscreen(m_sdlMainWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
 				}
 			}
-		}
+        }
+        else if (event.type == SDL_MOUSEMOTION || event.type == SDL_MOUSEBUTTONDOWN) {
+            m_mousetLastActiveTs = ts;
+        }
 	}
 }
 

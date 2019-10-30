@@ -86,4 +86,5 @@ private:
     int m_screenHight = 600;
 
     std::atomic_bool m_bDemuxFinish = false;
+    int64_t m_mousetLastActiveTs;
 };
