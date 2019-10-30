@@ -1,19 +1,19 @@
-#include "VideoDecoder.h"
+#include "PacketDecoder.h"
 #include <iostream>
 
 extern "C" {
 #include "libavcodec/avcodec.h"
 }
 
-VideoDecoder::VideoDecoder()
+PacketDecoder::PacketDecoder()
 {
 }
 
-VideoDecoder::~VideoDecoder()
+PacketDecoder::~PacketDecoder()
 {
 }
 
-bool VideoDecoder::Init(const AVCodecParameters* codecParams)
+bool PacketDecoder::Init(const AVCodecParameters* codecParams)
 {
     if (!codecParams) {
         return false;
@@ -45,7 +45,7 @@ bool VideoDecoder::Init(const AVCodecParameters* codecParams)
     return true;
 }
 
-void VideoDecoder::Free() {
+void PacketDecoder::Free() {
     if (m_ctx) {
         avcodec_close(m_ctx);
         avcodec_free_context(&m_ctx);
@@ -53,7 +53,7 @@ void VideoDecoder::Free() {
     }
 }
 
-int VideoDecoder::GetVideoWidth() {
+int PacketDecoder::GetVideoWidth() {
     if (m_ctx) {
         return m_ctx->width;
     }
@@ -61,7 +61,7 @@ int VideoDecoder::GetVideoWidth() {
     return 0;
 }
 
-int VideoDecoder::GetVideoHeight() {
+int PacketDecoder::GetVideoHeight() {
     if (m_ctx) {
         return m_ctx->height;
     }
@@ -69,7 +69,7 @@ int VideoDecoder::GetVideoHeight() {
     return 0;
 }
 
-bool VideoDecoder::DecodePacket(const AVPacket* pkt) {
+bool PacketDecoder::DecodePacket(const AVPacket* pkt) {
     //Send packet to decode thread;
     int re = avcodec_send_packet(m_ctx, pkt);
     if (re != 0) {
@@ -80,7 +80,7 @@ bool VideoDecoder::DecodePacket(const AVPacket* pkt) {
     return true;
 }
 
-AVFrame* VideoDecoder::GetDecodedFrame() {
+AVFrame* PacketDecoder::GetDecodedFrame() {
     AVFrame *frame = av_frame_alloc();
     int re = avcodec_receive_frame(m_ctx, frame);
     if (re != 0) {
@@ -93,7 +93,7 @@ AVFrame* VideoDecoder::GetDecodedFrame() {
     return frame;
 }
 
-char* VideoDecoder::GetErrorInfo(const int code) {
+char* PacketDecoder::GetErrorInfo(const int code) {
     memset(m_buf, 0, sizeof(m_buf));
     av_strerror(code, m_buf, sizeof(m_buf));
     return m_buf;

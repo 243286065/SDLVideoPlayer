@@ -6,7 +6,7 @@
 #include <queue>
 
 #include "FileDemuxer.h"
-#include "VideoDecoder.h"
+#include "PacketDecoder.h"
 
 extern "C"
 {
@@ -15,6 +15,12 @@ extern "C"
 }
 
 struct SwsContext;
+struct SwrContext;
+
+enum StreamType {
+    Video,
+    Audio,
+};
 
 class SDLVideoPlayer
 {
@@ -31,18 +37,29 @@ private:
 	void DoDecodeVideo();
 	void DoDecodeAudio();
     void ShowPlayUI();
+    void ShowPlayAudio();
 
-    void PlayFrame();
-    void StartTimer();
+    void PlayPictureFrame();
+    void PlayAudioFrame();
+    void StartPictureTimer();
+    void StartAudioTimer();
+
+    static void ReadAudioData(void *udata, Uint8 *stream, int len);
+
+    void GetPts(StreamType type, double currentPts, double &nextPts);
+    char* GetErrorInfo(const int code);
 
 	FileDemuxer m_demuxer;
-    VideoDecoder m_videoDecoder;
+    PacketDecoder m_videoDecoder;
+    PacketDecoder m_audioDecoder;
 
 	std::unique_ptr<std::thread> m_demuxThread = nullptr;
 	std::unique_ptr<std::thread> m_videoDecodeThread = nullptr;
 	std::unique_ptr<std::thread> m_audioDecodeThread = nullptr;
     std::unique_ptr<std::thread> m_sdlUiThread = nullptr;
-    std::unique_ptr<std::thread> m_sdlTimerThread = nullptr;
+    std::unique_ptr<std::thread> m_sdlVideoTimerThread = nullptr;
+    std::unique_ptr<std::thread> m_sdlAudioThread = nullptr;
+    std::unique_ptr<std::thread> m_sdlAudioTimerThread = nullptr;
 	//main thread
 	//std::unique_ptr<std::thread> m_sdlUiThread;
 
@@ -69,9 +86,9 @@ private:
     std::condition_variable m_videoFrameCv;
     std::condition_variable m_audioFrameCv;
     SwsContext* m_imgConvertCtx = nullptr;
+    SwrContext* m_audioConvertCtx = nullptr;
     std::queue<double> m_videoFrameTimestampQueue;
     std::queue<double> m_audioFrameTimestampQueue;
-    int64_t m_mainTimestamp;
 
     std::mutex m_timerMutex;
     std::condition_variable m_timerCv;
@@ -81,10 +98,17 @@ private:
     SDL_Renderer *m_sdlRender = nullptr;
     SDL_Texture *m_sdlTexture = nullptr;
     SDL_Rect m_sdlRect;
+    SDL_AudioSpec m_sdlAudioSpec;
     std::mutex m_sdlMutex;
     int m_screenWidth = 800;
     int m_screenHight = 600;
 
     std::atomic_bool m_bDemuxFinish = false;
     int64_t m_mousetLastActiveTs;
+
+    char m_buf[1024];
+    static uint8_t* m_audioPcmDataBuf;
+    static int m_audioPcmBufLen;
+    static std::mutex m_audioPcmMutex;
+    static std::condition_variable m_pcmCv;
 };

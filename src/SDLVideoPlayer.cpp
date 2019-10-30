@@ -1,11 +1,13 @@
 #include "SDLVideoPlayer.h"
 #include <iostream>
+#include <string.h>
 
 // ffmpeg and sdl header
 extern "C"
 {
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
+#include <libswresample/swresample.h>
 #include <libavutil/imgutils.h>
 }
 
@@ -13,7 +15,8 @@ extern "C"
 enum USER_EVNET
 {
 	SFM_NEW_EVENT = (SDL_USEREVENT + 1),
-	SFM_REFRESH_EVENT,
+	SFM_REFRESH_PIC_EVENT,
+    SFM_REFRESH_AUDIO_EVENT,
 	SFM_QUIT_EVENT,
 };
 
@@ -25,13 +28,22 @@ int64_t GetMillSecondsTimestamp()
 	return ms.count();
 }
 
+#define MAX_PAM_BUF_SIZE 102400
+
+uint8_t* SDLVideoPlayer::m_audioPcmDataBuf = new uint8_t[MAX_PAM_BUF_SIZE];
+int SDLVideoPlayer::m_audioPcmBufLen = 0;
+std::mutex SDLVideoPlayer::m_audioPcmMutex;
+std::condition_variable SDLVideoPlayer::m_pcmCv;
+
 SDLVideoPlayer::SDLVideoPlayer()
 {
 	m_sdlUiThread.reset(new std::thread(&SDLVideoPlayer::ShowPlayUI, this));
 	m_demuxThread.reset(new std::thread(&SDLVideoPlayer::DoDemuex, this));
 	m_videoDecodeThread.reset(new std::thread(&SDLVideoPlayer::DoDecodeVideo, this));
 	m_audioDecodeThread.reset(new std::thread(&SDLVideoPlayer::DoDecodeAudio, this));
-	m_sdlTimerThread.reset(new std::thread(&SDLVideoPlayer::StartTimer, this));
+    m_sdlVideoTimerThread.reset(new std::thread(&SDLVideoPlayer::StartPictureTimer, this));
+    m_sdlAudioTimerThread.reset(new std::thread(&SDLVideoPlayer::StartAudioTimer, this));
+    m_sdlAudioThread.reset(new std::thread(&SDLVideoPlayer::ShowPlayAudio, this));
 }
 
 SDLVideoPlayer::~SDLVideoPlayer()
@@ -61,10 +73,20 @@ SDLVideoPlayer::~SDLVideoPlayer()
 		m_sdlUiThread->join();
 	}
 
-	if (m_sdlTimerThread && m_sdlTimerThread->joinable())
+	if (m_sdlVideoTimerThread && m_sdlVideoTimerThread->joinable())
 	{
-		m_sdlTimerThread->join();
+        m_sdlVideoTimerThread->join();
 	}
+
+    if(m_sdlAudioTimerThread && m_sdlVideoTimerThread->joinable())
+    {
+        m_sdlAudioTimerThread->join();
+    }
+
+    if (m_sdlAudioThread && m_sdlAudioThread->joinable())
+    {
+        m_sdlAudioThread->join();
+    }
 }
 
 void SDLVideoPlayer::StartPlay(const std::string &filename)
@@ -79,7 +101,7 @@ void SDLVideoPlayer::StartPlay(const std::string &filename)
 	m_filename = filename;
 	m_bStartPlay = true;
 	// Start to demux file
-	m_startCv.notify_one();
+	m_startCv.notify_all();
 }
 
 void SDLVideoPlayer::StopPlay()
@@ -88,12 +110,18 @@ void SDLVideoPlayer::StopPlay()
 	m_startCv.notify_all();
 	m_videoTaskCv.notify_all();
 	m_audioTaskCv.notify_all();
+    SDL_PauseAudio(1);
 
 	if (m_imgConvertCtx)
 	{
 		sws_freeContext(m_imgConvertCtx);
 		m_imgConvertCtx = nullptr;
 	}
+
+    if (m_audioConvertCtx) {
+        swr_free(&m_audioConvertCtx);
+        m_audioConvertCtx = nullptr;
+    }
 }
 
 void SDLVideoPlayer::Free()
@@ -124,7 +152,7 @@ void SDLVideoPlayer::DoDemuex()
 		}
 
 		//Open codec
-		if (!m_videoDecoder.Init(&m_videoCodecParams))
+		if (!m_videoDecoder.Init(&m_videoCodecParams) || !m_audioDecoder.Init(&m_audioCodecParams))
 		{
 			continue;
 		}
@@ -160,7 +188,7 @@ void SDLVideoPlayer::DoDemuex()
 					m_videoDecodeTask.push(pkt);
 					m_videoTaskCv.notify_one();
 
-					if (m_videoDecodeTask.size() > 10)
+					if (m_videoDecodeTask.size() > 5)
 					{
 						m_videoTaskCv.wait(lock);
 					}
@@ -212,7 +240,7 @@ void SDLVideoPlayer::DoDecodeVideo()
 				m_videoFrameQueue.push(frame);
 				m_videoFrameTimestampQueue.push(frame->pts * av_q2d(m_demuxer.GetVideoTimeBase()) * 1000);
 
-				if (m_videoFrameQueue.size() > 10)
+				if (m_videoFrameQueue.size() > 25)
 				{ // cache
 					m_videoFrameCv.wait(frameLock);
 				}
@@ -243,7 +271,24 @@ void SDLVideoPlayer::DoDecodeAudio()
 
 			//decode pkt
 			std::cout << pkt->pos << " : audio packet" << std::endl;
+            m_audioDecoder.DecodePacket(pkt);
+            while (true)
+            {
+                AVFrame *frame = m_audioDecoder.GetDecodedFrame();
+                if (frame == nullptr)
+                {
+                    break;
+                }
 
+                std::unique_lock<std::mutex> frameLock(m_audioFrameMutex);
+                m_audioFrameQueue.push(frame);
+                m_audioFrameTimestampQueue.push(frame->pts * av_q2d(m_demuxer.GetAudioTimeBase()) * 1000);
+
+                if (m_audioFrameQueue.size() > 100)
+                { // cache
+                    m_audioFrameCv.wait(frameLock);
+                }
+            }
 
 			av_packet_unref(pkt);
             av_packet_free(&pkt);
@@ -291,6 +336,7 @@ void SDLVideoPlayer::ShowPlayUI()
 			m_screenWidth = m_videoCodecParams.width;
 			m_screenHight = m_videoCodecParams.height;
 			SDL_SetWindowSize(m_sdlMainWindow, m_screenWidth, m_screenHight);
+
 			m_sdlMutex.unlock();
 
 			SDL_Event event;
@@ -299,14 +345,14 @@ void SDLVideoPlayer::ShowPlayUI()
 			SDL_PushEvent(&event);
 			// Start play
 			std::lock_guard<std::mutex> lock(m_timerMutex);
-			m_timerCv.notify_one();
+			m_timerCv.notify_all();
 		}
 		else if (event.type == SFM_QUIT_EVENT)
 		{
 			SDL_Quit();
 			return;
 		}
-		else if (event.type == SFM_REFRESH_EVENT)
+		else if (event.type == SFM_REFRESH_PIC_EVENT)
 		{
 			// next frame
 			int width, height;
@@ -318,8 +364,12 @@ void SDLVideoPlayer::ShowPlayUI()
 				event.window.event = SDL_WINDOWEVENT_RESIZED;
 				SDL_PushEvent(&event);
 			}
-			PlayFrame();
+            PlayPictureFrame();
 		}
+        else if (event.type == SFM_REFRESH_AUDIO_EVENT)
+        {
+            PlayAudioFrame();
+        }
 		else if (event.type == SDL_WINDOWEVENT)
 		{
 			switch (event.window.event)
@@ -397,7 +447,7 @@ void SDLVideoPlayer::ShowPlayUI()
 	}
 }
 
-void SDLVideoPlayer::PlayFrame()
+void SDLVideoPlayer::PlayPictureFrame()
 {
 	m_videoFrameMutex.lock();
 	if (m_videoFrameQueue.empty())
@@ -445,7 +495,110 @@ void SDLVideoPlayer::PlayFrame()
 	av_frame_free(&frameYUV);
 }
 
-void SDLVideoPlayer::StartTimer()
+
+void SDLVideoPlayer::ShowPlayAudio() {
+    SDL_Event event;
+    while (!m_bExitFlag)
+    {
+        std::unique_lock<std::mutex> lock(m_timerMutex);
+        m_timerCv.wait(lock);
+        lock.unlock();
+
+        if (m_bExitFlag)
+        {
+            return;
+        }
+
+        if (!m_bStartPlay)
+        {
+            continue;
+        }
+
+        auto audioCtx = m_audioDecoder.GetCodecContext();
+        m_sdlAudioSpec.freq = audioCtx->sample_rate;//根据你录制的PCM采样率决定
+        m_sdlAudioSpec.format = AUDIO_S16SYS;
+        m_sdlAudioSpec.channels = audioCtx->channels;
+        m_sdlAudioSpec.silence = 0;
+        m_sdlAudioSpec.samples = m_audioCodecParams.frame_size;
+        m_sdlAudioSpec.callback = &SDLVideoPlayer::ReadAudioData;
+        m_sdlAudioSpec.userdata = NULL;
+        int re = SDL_OpenAudio(&m_sdlAudioSpec, NULL);
+        if (re < 0) {
+            std::cout << "can't open audio: " << GetErrorInfo(re);
+        }
+        else {
+            //Start play audio
+            SDL_PauseAudio(0);
+        }
+    }
+}
+
+void SDLVideoPlayer::PlayAudioFrame() {
+    m_audioFrameMutex.lock();
+
+    if (m_audioFrameQueue.empty())
+    {
+        m_audioFrameCv.notify_one();
+        m_audioFrameMutex.unlock();
+
+        if (m_bStartPlay && m_bDemuxFinish)
+        {
+            m_videoTaskMutex.lock();
+            m_audioTaskMutex.lock();
+            if (m_videoDecodeTask.empty() && m_audioDecodeTask.empty()) {
+                //Finish
+                StopPlay();
+            }
+            m_audioTaskMutex.unlock();
+            m_videoTaskMutex.unlock();
+        }
+        return;
+    }
+
+    AVFrame *frame = m_audioFrameQueue.front();
+    m_audioFrameQueue.pop();
+
+    if (!m_audioConvertCtx) {
+        auto ctx = m_audioDecoder.GetCodecContext();
+        m_audioConvertCtx = swr_alloc();
+        m_audioConvertCtx = swr_alloc_set_opts(
+            m_audioConvertCtx,
+            av_get_default_channel_layout(2),	//输出通道数
+            AV_SAMPLE_FMT_S16,					//输出格式
+            ctx->sample_rate,					//输出采样率
+            ctx->channel_layout,					//输入通道数
+            ctx->sample_fmt,						//输入格式
+            ctx->sample_rate,					//输入采样率
+            0,
+            0
+        );
+        int re = swr_init(m_audioConvertCtx);
+        if (re != 0) {
+            std::cout << "swr_init failed: " << GetErrorInfo(re) << std::endl;
+            return;
+        }
+    }
+
+    uint8_t *data[2] = { 0 };
+    m_audioPcmMutex.lock();
+
+    data[0] = m_audioPcmDataBuf + m_audioPcmBufLen;
+    int re = swr_convert(m_audioConvertCtx,
+        data,
+        frame->nb_samples,
+        (const uint8_t**)frame->data,
+        frame->nb_samples);
+    m_audioPcmBufLen += frame->nb_samples * 2 * 2;
+    m_audioPcmMutex.unlock();
+
+    m_audioFrameCv.notify_one();
+    m_audioFrameMutex.unlock();
+    av_frame_free(&frame);
+
+    m_pcmCv.notify_one();
+}
+
+void SDLVideoPlayer::StartPictureTimer()
 {
 	while (!m_bExitFlag)
 	{
@@ -453,35 +606,116 @@ void SDLVideoPlayer::StartTimer()
 		m_timerCv.wait(lock);
 		lock.unlock();
 
+        double currentPts = 0;
 		while (!m_bExitFlag && m_bStartPlay)
-		{
-			SDL_Event event;
-			event.type = SFM_REFRESH_EVENT;
-			SDL_PushEvent(&event);
-			//SDL_Delay(40); //25fps
-			std::unique_lock<std::mutex> lock(m_videoFrameMutex);
-			double currentPts = 0, nextPts = 0;
-			if (m_videoFrameTimestampQueue.empty())
-			{
-				nextPts = currentPts + 40; //25fps
-			}
-			else
-			{
-				currentPts = m_videoFrameTimestampQueue.front();
-				m_videoFrameTimestampQueue.pop();
+		{	
+            double videoNextPts;
+            //double audioNextPts;
+            GetPts(StreamType::Video, currentPts, videoNextPts);
 
-				if (m_videoFrameTimestampQueue.empty())
-				{
-					nextPts = currentPts + 40; //25fps
-				}
-				else
-				{
-					nextPts = m_videoFrameTimestampQueue.front();
-				}
-			}
-
-			lock.unlock();
-			SDL_Delay((int)(nextPts - currentPts));
+            SDL_Event event;
+            std::cout << "-------------video---------------------: " << (int)(videoNextPts - currentPts) << std::endl;
+            SDL_Delay((int)(videoNextPts - currentPts));
+            event.type = SFM_REFRESH_PIC_EVENT;
+            SDL_PushEvent(&event);
+            currentPts = videoNextPts;
 		}
 	}
+}
+
+void SDLVideoPlayer::StartAudioTimer() {
+    while (!m_bExitFlag)
+    {
+        std::unique_lock<std::mutex> lock(m_timerMutex);
+        m_timerCv.wait(lock);
+        lock.unlock();
+
+        double currentPts = 0;
+        while (!m_bExitFlag && m_bStartPlay)
+        {
+            double audioNextPts;
+            GetPts(StreamType::Audio, currentPts, audioNextPts);
+
+            SDL_Event event;
+            std::cout << "-------------audio---------------------: " << (int)(audioNextPts - currentPts) << std::endl;
+            
+            if (audioNextPts > currentPts) {
+                SDL_Delay((int)(audioNextPts - currentPts));
+                event.type = SFM_REFRESH_AUDIO_EVENT;
+                SDL_PushEvent(&event);
+                currentPts = audioNextPts;
+            }
+        }
+    }
+}
+
+void SDLVideoPlayer::GetPts(StreamType type, double currentPts, double &nextPts) {
+    if (type == StreamType::Video) {
+        m_videoFrameMutex.lock();
+    }
+    else {
+        m_audioFrameMutex.lock();
+    }
+
+    nextPts = 0;
+
+    if (type == StreamType::Video) {
+        if (m_videoFrameTimestampQueue.empty())
+        {
+            nextPts = currentPts + 40; //25fps
+        }
+        else
+        {
+            nextPts = m_videoFrameTimestampQueue.front();
+            m_videoFrameTimestampQueue.pop();
+        }
+    }
+    else {
+        if (m_audioFrameTimestampQueue.empty())
+        {
+            nextPts = currentPts + 10; //100fps
+        }
+        else
+        {
+            nextPts = m_audioFrameTimestampQueue.front();
+            m_audioFrameTimestampQueue.pop();
+        }
+    }
+
+    if (type == StreamType::Video) {
+        m_videoFrameMutex.unlock();
+    }
+    else {
+        m_audioFrameMutex.unlock();
+    }
+}
+
+char* SDLVideoPlayer::GetErrorInfo(const int code) {
+    memset(m_buf, 0, sizeof(m_buf));
+    av_strerror(code, m_buf, sizeof(m_buf));
+    return m_buf;
+}
+
+
+void SDLVideoPlayer::ReadAudioData(void *udata, Uint8 *stream, int len) {
+    SDL_memset(stream, 0, len);
+
+    std::unique_lock<std::mutex> lock(m_audioPcmMutex);
+
+    //向设备发送长度为len的数据
+    if (m_audioPcmBufLen == len) {
+        return;
+    }
+
+    std::cout << "len: " << len << "-------- m_audioPcmBufLen: " << m_audioPcmBufLen << std::endl;
+
+    len = (len > m_audioPcmBufLen ? m_audioPcmBufLen : len);
+    uint8_t* buf = new uint8_t[len];
+    memcpy(buf, m_audioPcmDataBuf, len);
+    m_audioPcmBufLen -= len;
+    memcpy(m_audioPcmDataBuf, m_audioPcmDataBuf + len, m_audioPcmBufLen);
+    lock.unlock();
+    //SDL_MixAudio(stream, buf, len, SDL_MIX_MAXVOLUME);
+    SDL_MixAudio(stream, buf, len, SDL_MIX_MAXVOLUME);
+    delete[] buf;
 }

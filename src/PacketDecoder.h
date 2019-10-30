@@ -7,10 +7,10 @@ struct AVCodecParameters;
 struct AVFrame;
 struct AVPacket;
 
-class VideoDecoder {
+class PacketDecoder {
 public:
-    VideoDecoder();
-    ~VideoDecoder();
+    PacketDecoder();
+    ~PacketDecoder();
 
     bool Init(const AVCodecParameters* codecParams);
     void Free();
