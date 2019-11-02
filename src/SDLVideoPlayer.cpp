@@ -33,7 +33,12 @@ int64_t GetMillSecondsTimestamp()
 uint8_t* SDLVideoPlayer::m_audioPcmDataBuf = new uint8_t[MAX_PAM_BUF_SIZE];
 int SDLVideoPlayer::m_audioPcmBufLen = 0;
 std::mutex SDLVideoPlayer::m_audioPcmMutex;
-std::condition_variable SDLVideoPlayer::m_pcmCv;
+std::condition_variable SDLVideoPlayer::m_pcmCvRead;
+std::condition_variable SDLVideoPlayer::m_pcmCvWrite;
+double SDLVideoPlayer::m_currentPts = 0;
+
+std::atomic_bool g_bReadAudio = false;
+int g_ReadLenExpect = 0;
 
 SDLVideoPlayer::SDLVideoPlayer()
 {
@@ -42,7 +47,6 @@ SDLVideoPlayer::SDLVideoPlayer()
 	m_videoDecodeThread.reset(new std::thread(&SDLVideoPlayer::DoDecodeVideo, this));
 	m_audioDecodeThread.reset(new std::thread(&SDLVideoPlayer::DoDecodeAudio, this));
     m_sdlVideoTimerThread.reset(new std::thread(&SDLVideoPlayer::StartPictureTimer, this));
-    m_sdlAudioTimerThread.reset(new std::thread(&SDLVideoPlayer::StartAudioTimer, this));
     m_sdlAudioThread.reset(new std::thread(&SDLVideoPlayer::ShowPlayAudio, this));
 }
 
@@ -77,11 +81,6 @@ SDLVideoPlayer::~SDLVideoPlayer()
 	{
         m_sdlVideoTimerThread->join();
 	}
-
-    if(m_sdlAudioTimerThread && m_sdlVideoTimerThread->joinable())
-    {
-        m_sdlAudioTimerThread->join();
-    }
 
     if (m_sdlAudioThread && m_sdlAudioThread->joinable())
     {
@@ -173,42 +172,50 @@ void SDLVideoPlayer::DoDemuex()
         m_bDemuxFinish = false;
 		while (!m_bExitFlag && m_bStartPlay)
 		{
-			AVPacket *pkt = m_demuxer.GetPacket();
-			if (!pkt)
-			{
-				//m_bStartPlay = false;
-                m_bDemuxFinish = true;
-				break;
-			}
-			else
-			{
-				if (pkt->stream_index == videoIndex)
-				{
-					std::unique_lock<std::mutex> lock(m_videoTaskMutex);
-					m_videoDecodeTask.push(pkt);
-					m_videoTaskCv.notify_one();
-
-					if (m_videoDecodeTask.size() > 5)
-					{
-						m_videoTaskCv.wait(lock);
-					}
-				}
-				else if (pkt->stream_index == audioIndex)
-				{
-                    std::unique_lock<std::mutex> lock(m_audioTaskMutex);
-                    m_audioDecodeTask.push(pkt);
-                    m_audioTaskCv.notify_one();
-
-                    if (m_audioDecodeTask.size() > 10)
+            std::unique_lock<std::mutex> lock(m_audioPcmMutex);
+            if (m_audioPcmBufLen < g_ReadLenExpect) {
+                lock.unlock();
+                AVPacket *pkt = m_demuxer.GetPacket();
+                if (!pkt)
+                {
+                    //m_bStartPlay = false;
+                    m_bDemuxFinish = true;
+                    break;
+                }
+                else
+                {
+                    if (pkt->stream_index == videoIndex)
                     {
-                        m_audioTaskCv.wait(lock);
+                        std::unique_lock<std::mutex> lock(m_videoTaskMutex);
+                        m_videoDecodeTask.push(pkt);
+                        m_videoTaskCv.notify_one();
+
+                        /*if (m_videoDecodeTask.size() > 5)
+                        {
+                            m_videoTaskCv.wait(lock);
+                        }*/
                     }
-				}
-				else
-				{
-					std::cout << "Unkonw stream" << std::endl;
-				}
-			}
+                    else if (pkt->stream_index == audioIndex)
+                    {
+                        std::unique_lock<std::mutex> lock(m_audioTaskMutex);
+                        m_audioDecodeTask.push(pkt);
+                        m_audioTaskCv.notify_one();
+
+                        /*if (m_audioDecodeTask.size() > 10)
+                        {
+                            m_audioTaskCv.wait(lock);
+                        }*/
+                    }
+                    else {
+                        av_packet_unref(pkt);
+                        av_packet_free(&pkt);
+                    }
+                }
+            }
+            else
+            {
+                m_pcmCvRead.wait(lock);
+            }
 		}
 	}
 }
@@ -272,22 +279,28 @@ void SDLVideoPlayer::DoDecodeAudio()
 			//decode pkt
 			std::cout << pkt->pos << " : audio packet" << std::endl;
             m_audioDecoder.DecodePacket(pkt);
-            while (true)
+            while (!m_bExitFlag)
             {
+                std::unique_lock<std::mutex> lock(m_audioPcmMutex);
+                if (m_audioPcmBufLen > g_ReadLenExpect) {
+                    m_pcmCvRead.wait(lock);
+                    continue;
+                }
+                lock.unlock();
+
                 AVFrame *frame = m_audioDecoder.GetDecodedFrame();
                 if (frame == nullptr)
                 {
                     break;
                 }
+                //m_audioFrameTimestampQueue.push(frame->pts * av_q2d(m_demuxer.GetAudioTimeBase()) * 1000);
+                
 
-                std::unique_lock<std::mutex> frameLock(m_audioFrameMutex);
-                m_audioFrameQueue.push(frame);
-                m_audioFrameTimestampQueue.push(frame->pts * av_q2d(m_demuxer.GetAudioTimeBase()) * 1000);
-
-                if (m_audioFrameQueue.size() > 100)
-                { // cache
-                    m_audioFrameCv.wait(frameLock);
-                }
+                ReadAudioFrame(frame);
+                //if (m_audioFrameQueue.size() > 100)
+                //{ // cache
+                //    m_audioFrameCv.wait(frameLock);
+                //}
             }
 
 			av_packet_unref(pkt);
@@ -366,10 +379,6 @@ void SDLVideoPlayer::ShowPlayUI()
 			}
             PlayPictureFrame();
 		}
-        else if (event.type == SFM_REFRESH_AUDIO_EVENT)
-        {
-            PlayAudioFrame();
-        }
 		else if (event.type == SDL_WINDOWEVENT)
 		{
 			switch (event.window.event)
@@ -533,30 +542,11 @@ void SDLVideoPlayer::ShowPlayAudio() {
     }
 }
 
-void SDLVideoPlayer::PlayAudioFrame() {
-    m_audioFrameMutex.lock();
+void SDLVideoPlayer::ReadAudioFrame(AVFrame *frame) {
 
-    if (m_audioFrameQueue.empty())
-    {
-        m_audioFrameCv.notify_one();
-        m_audioFrameMutex.unlock();
-
-        if (m_bStartPlay && m_bDemuxFinish)
-        {
-            m_videoTaskMutex.lock();
-            m_audioTaskMutex.lock();
-            if (m_videoDecodeTask.empty() && m_audioDecodeTask.empty()) {
-                //Finish
-                StopPlay();
-            }
-            m_audioTaskMutex.unlock();
-            m_videoTaskMutex.unlock();
-        }
+    if (!frame) {
         return;
     }
-
-    AVFrame *frame = m_audioFrameQueue.front();
-    m_audioFrameQueue.pop();
 
     if (!m_audioConvertCtx) {
         auto ctx = m_audioDecoder.GetCodecContext();
@@ -581,21 +571,26 @@ void SDLVideoPlayer::PlayAudioFrame() {
 
     uint8_t *data[2] = { 0 };
     m_audioPcmMutex.lock();
-
+    std::cout << "---------------------------1------------" << std::endl;
     data[0] = m_audioPcmDataBuf + m_audioPcmBufLen;
+    std::cout << "---------------------------2------------" << std::endl;
     int re = swr_convert(m_audioConvertCtx,
         data,
         frame->nb_samples,
         (const uint8_t**)frame->data,
         frame->nb_samples);
+    std::cout << "---------------------------3------------" << std::endl;
     m_audioPcmBufLen += frame->nb_samples * 2 * 2;
+    std::cout << "---------------------------4------------" << std::endl;
+
+    if (m_audioPcmBufLen >= g_ReadLenExpect) {
+        m_currentPts = frame->pts * av_q2d(m_demuxer.GetAudioTimeBase()) * 1000;
+        m_pcmCvWrite.notify_one();
+    }
+
     m_audioPcmMutex.unlock();
 
-    m_audioFrameCv.notify_one();
-    m_audioFrameMutex.unlock();
     av_frame_free(&frame);
-
-    m_pcmCv.notify_one();
 }
 
 void SDLVideoPlayer::StartPictureTimer()
@@ -621,32 +616,6 @@ void SDLVideoPlayer::StartPictureTimer()
             currentPts = videoNextPts;
 		}
 	}
-}
-
-void SDLVideoPlayer::StartAudioTimer() {
-    while (!m_bExitFlag)
-    {
-        std::unique_lock<std::mutex> lock(m_timerMutex);
-        m_timerCv.wait(lock);
-        lock.unlock();
-
-        double currentPts = 0;
-        while (!m_bExitFlag && m_bStartPlay)
-        {
-            double audioNextPts;
-            GetPts(StreamType::Audio, currentPts, audioNextPts);
-
-            SDL_Event event;
-            std::cout << "-------------audio---------------------: " << (int)(audioNextPts - currentPts) << std::endl;
-            
-            if (audioNextPts > currentPts) {
-                SDL_Delay((int)(audioNextPts - currentPts));
-                event.type = SFM_REFRESH_AUDIO_EVENT;
-                SDL_PushEvent(&event);
-                currentPts = audioNextPts;
-            }
-        }
-    }
 }
 
 void SDLVideoPlayer::GetPts(StreamType type, double currentPts, double &nextPts) {
@@ -683,9 +652,22 @@ void SDLVideoPlayer::GetPts(StreamType type, double currentPts, double &nextPts)
     }
 
     if (type == StreamType::Video) {
+
+        //// 同步音视频，根据当前音频的时间戳调整视频帧的播放速度
+        //if (nextPts < m_currentPts - 5 || nextPts > m_currentPts - 5) {
+        //    nextPts = m_currentPts;
+        //}
+
+        if (nextPts <= currentPts) {
+            nextPts = currentPts + 5;
+        }
+
         m_videoFrameMutex.unlock();
     }
     else {
+        if (nextPts < currentPts) {
+            nextPts = currentPts + 10;
+        }
         m_audioFrameMutex.unlock();
     }
 }
@@ -703,19 +685,18 @@ void SDLVideoPlayer::ReadAudioData(void *udata, Uint8 *stream, int len) {
     std::unique_lock<std::mutex> lock(m_audioPcmMutex);
 
     //向设备发送长度为len的数据
-    if (m_audioPcmBufLen == len) {
-        return;
+    if(m_audioPcmBufLen < len) {
+        g_ReadLenExpect = len;
+        m_pcmCvRead.notify_all();
+        m_pcmCvWrite.wait(lock);
     }
 
     std::cout << "len: " << len << "-------- m_audioPcmBufLen: " << m_audioPcmBufLen << std::endl;
 
-    len = (len > m_audioPcmBufLen ? m_audioPcmBufLen : len);
-    uint8_t* buf = new uint8_t[len];
-    memcpy(buf, m_audioPcmDataBuf, len);
+    SDL_MixAudio(stream, m_audioPcmDataBuf, len, SDL_MIX_MAXVOLUME);
     m_audioPcmBufLen -= len;
-    memcpy(m_audioPcmDataBuf, m_audioPcmDataBuf + len, m_audioPcmBufLen);
-    lock.unlock();
-    //SDL_MixAudio(stream, buf, len, SDL_MIX_MAXVOLUME);
-    SDL_MixAudio(stream, buf, len, SDL_MIX_MAXVOLUME);
-    delete[] buf;
+
+    if (m_audioPcmBufLen > 0) {
+        memcpy(m_audioPcmDataBuf, m_audioPcmDataBuf + len, m_audioPcmBufLen);
+    }
 }

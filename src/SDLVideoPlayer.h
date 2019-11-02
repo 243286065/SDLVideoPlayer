@@ -40,9 +40,8 @@ private:
     void ShowPlayAudio();
 
     void PlayPictureFrame();
-    void PlayAudioFrame();
+    void ReadAudioFrame(AVFrame *frame);
     void StartPictureTimer();
-    void StartAudioTimer();
 
     static void ReadAudioData(void *udata, Uint8 *stream, int len);
 
@@ -59,7 +58,6 @@ private:
     std::unique_ptr<std::thread> m_sdlUiThread = nullptr;
     std::unique_ptr<std::thread> m_sdlVideoTimerThread = nullptr;
     std::unique_ptr<std::thread> m_sdlAudioThread = nullptr;
-    std::unique_ptr<std::thread> m_sdlAudioTimerThread = nullptr;
 	//main thread
 	//std::unique_ptr<std::thread> m_sdlUiThread;
 
@@ -110,5 +108,7 @@ private:
     static uint8_t* m_audioPcmDataBuf;
     static int m_audioPcmBufLen;
     static std::mutex m_audioPcmMutex;
-    static std::condition_variable m_pcmCv;
+    static std::condition_variable m_pcmCvRead;
+    static std::condition_variable m_pcmCvWrite;
+    static double m_currentPts;
 };
