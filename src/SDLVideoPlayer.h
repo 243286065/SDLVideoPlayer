@@ -45,7 +45,7 @@ private:
 
     static void ReadAudioData(void *udata, Uint8 *stream, int len);
 
-    void GetPts(StreamType type, double currentPts, double &nextPts);
+    double GetDeLay();
     char* GetErrorInfo(const int code);
 
 	FileDemuxer m_demuxer;
@@ -85,8 +85,6 @@ private:
     std::condition_variable m_audioFrameCv;
     SwsContext* m_imgConvertCtx = nullptr;
     SwrContext* m_audioConvertCtx = nullptr;
-    std::queue<double> m_videoFrameTimestampQueue;
-    std::queue<double> m_audioFrameTimestampQueue;
 
     std::mutex m_timerMutex;
     std::condition_variable m_timerCv;
@@ -110,5 +108,5 @@ private:
     static std::mutex m_audioPcmMutex;
     static std::condition_variable m_pcmCvRead;
     static std::condition_variable m_pcmCvWrite;
-    static double m_currentPts;
+    static double m_audioCurrentPts;
 };
