@@ -48,6 +48,8 @@ private:
     double GetDeLay();
     char* GetErrorInfo(const int code);
 
+    void SeekFrame(int pts);
+
 	FileDemuxer m_demuxer;
     PacketDecoder m_videoDecoder;
     PacketDecoder m_audioDecoder;
@@ -78,11 +80,8 @@ private:
     AVCodecParameters m_videoCodecParams;
     AVCodecParameters m_audioCodecParams;
     std::queue<AVFrame *> m_videoFrameQueue;
-    std::queue<AVFrame *> m_audioFrameQueue;
     std::mutex m_videoFrameMutex;
-    std::mutex m_audioFrameMutex;
     std::condition_variable m_videoFrameCv;
-    std::condition_variable m_audioFrameCv;
     SwsContext* m_imgConvertCtx = nullptr;
     SwrContext* m_audioConvertCtx = nullptr;
 

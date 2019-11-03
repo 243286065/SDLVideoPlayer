@@ -50,6 +50,8 @@ public:
     double GetAudioTotalSecond() { return m_audioTotalSecond; }
     AVRational GetVideoTimeBase();
     AVRational GetAudioTimeBase();
+
+    void SeekFrame(int pts);
 private:
 	AVFormatContext *m_pFormatCtx = nullptr;
 	int m_videoStreamIndex;

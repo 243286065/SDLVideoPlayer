@@ -47,6 +47,7 @@ int g_ReadLenExpect = 0;
 int g_bytesAudioSecond = 0;
 double g_delapyMs = 0;
 double g_audioNextPts = 0;
+std::atomic_bool g_syncAudioTime = true;
 
 // 音量
 int g_volum = SDL_MIX_MAXVOLUME / 2;
@@ -319,19 +320,16 @@ void SDLVideoPlayer::DoDecodeAudio()
                     break;
                 }
 
-                if (m_audioCurrentPts == 0)
+                if (m_audioCurrentPts == 0 || g_syncAudioTime)
                 {
                     // 记录起始的音频时间
                     m_audioCurrentPts = frame->pts * av_q2d(m_demuxer.GetAudioTimeBase()) * 1000;
+                    g_syncAudioTime = false;
                 }
 
                 //m_audioFrameTimestampQueue.push(frame->pts * av_q2d(m_demuxer.GetAudioTimeBase()) * 1000);
 
                 ReadAudioFrame(frame);
-                //if (m_audioFrameQueue.size() > 100)
-                //{ // cache
-                //    m_audioFrameCv.wait(frameLock);
-                //}
             }
 
             av_packet_unref(pkt);
@@ -503,9 +501,13 @@ void SDLVideoPlayer::ShowPlayUI()
             }
             else if (event.key.keysym.scancode == SDL_SCANCODE_LEFT) {
                 // 快退
+                int newPts = (int)(m_audioCurrentPts / 1000 - 30);
+                SeekFrame(newPts);
             }
             else if (event.key.keysym.scancode == SDL_SCANCODE_RIGHT) {
                 // 快进
+                int newPts = (int)(m_audioCurrentPts / 1000 + 30);
+                SeekFrame(newPts);
             }
             else if (event.key.keysym.scancode == SDL_SCANCODE_DOWN) {
                 // 减少音量
@@ -698,9 +700,9 @@ void SDLVideoPlayer::StartPictureTimer()
 
                 SDL_Event event;
                 std::cout << "-------------video---------------------: " << (int)(delay) << std::endl;
-                if (delay < 0)
+                if (delay <= 0)
                 {
-                    delay = 0;
+                    delay = 1;
                 }
                 SDL_Delay((int)delay);
                 event.type = SFM_REFRESH_PIC_EVENT;
@@ -724,24 +726,33 @@ double SDLVideoPlayer::GetDeLay()
     {
         nextPts = m_videoFrameQueue.front()->pts * av_q2d(m_demuxer.GetVideoTimeBase()) * 1000;
         // 同步音视频，根据当前音频的时间戳调整视频帧的播放速度
-        if (g_delapyMs > 20)
+        if (g_delapyMs > 40) {
+            //丢弃
+            delay = 0;
+            g_delapyMs = m_audioCurrentPts - nextPts;
+        }
+        else if (g_delapyMs > 10)
         {
             // 视频慢了，加快
-            delay = nextPts - g_videoCurrentPts - g_delapyMs / 3;
+            delay = nextPts - g_videoCurrentPts - g_delapyMs/2;
+            g_delapyMs /= 2;
         }
-        else if (g_delapyMs < -20)
-        {
-            // 视频快了，需要变慢
-            delay = nextPts - g_videoCurrentPts - g_delapyMs / 3;
+        else if (g_delapyMs > -10) {
+            delay = nextPts - g_videoCurrentPts;
         }
         else
         {
-            delay = nextPts - g_videoCurrentPts;
+            // 视频快了，需要变慢
+            delay = nextPts - g_videoCurrentPts - g_delapyMs;
+            g_delapyMs = 0;
         }
     }
 
     if (delay < 0)
         delay = 0;
+
+    if (delay > 1000)
+        delay = 100;
 
     g_ptsMutex.unlock();
     m_videoFrameMutex.unlock();
@@ -787,4 +798,55 @@ void SDLVideoPlayer::ReadAudioData(void *udata, Uint8 *stream, int len)
     {
         memcpy(m_audioPcmDataBuf, m_audioPcmDataBuf + len, m_audioPcmBufLen);
     }
+}
+
+void SDLVideoPlayer::SeekFrame(int pts) {
+    if (pts < 0) {
+        pts = 0;
+    }
+
+    g_bPlayPause = true;
+
+    m_demuxer.SeekFrame(pts);
+
+    // 清空缓存数据
+    m_videoTaskMutex.lock();
+    while (!m_videoDecodeTask.empty()) {
+        auto pkt = m_videoDecodeTask.front();
+        m_videoDecodeTask.pop();
+        av_packet_free(&pkt);
+    }
+    m_videoTaskMutex.unlock();
+
+    m_videoFrameMutex.lock();
+    while (!m_videoFrameQueue.empty()) {
+        auto frame = m_videoFrameQueue.front();
+        m_videoFrameQueue.pop();
+        av_frame_free(&frame);
+    }
+    m_videoFrameMutex.unlock();
+
+    m_audioTaskMutex.lock();
+    while (!m_audioDecodeTask.empty()) {
+        auto pkt = m_audioDecodeTask.front();
+        m_audioDecodeTask.pop();
+        av_packet_free(&pkt);
+    }
+    m_audioTaskMutex.unlock();
+
+    m_audioPcmMutex.lock();
+    m_audioPcmBufLen = 0;
+    m_audioPcmMutex.unlock();
+
+    // 清空时间记录
+    g_ptsMutex.lock();
+    m_audioCurrentPts = pts * 1000;
+    g_videoCurrentPts = m_audioCurrentPts;
+    g_audioNextPts = m_audioCurrentPts;
+    g_ptsMutex.unlock();
+
+    g_bPlayPause = false;
+    g_syncAudioTime = true;
+    m_videoTaskCv.notify_all();
+    m_audioTaskCv.notify_all();
 }

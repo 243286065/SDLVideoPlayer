@@ -119,3 +119,10 @@ AVRational FileDemuxer::GetAudioTimeBase()
 {
 	return m_pFormatCtx->streams[m_audioStreamIndex]->time_base;
 }
+
+void FileDemuxer::SeekFrame(int pts) 
+{
+    m_syncMutex.lock();
+    av_seek_frame(m_pFormatCtx, -1, pts * AV_TIME_BASE, AVSEEK_FLAG_BACKWARD);
+    m_syncMutex.unlock();
+}
